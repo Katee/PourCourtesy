@@ -29,27 +29,25 @@ class Game:
                 for player in self.players:
                     player.headset_status.status_print()
                     player.headset_status.status_changed = False
-            else:
+        else:
+            if serial_conn != None and serial_conn.isOpen():
+                global prev_timestamp_s
+                global serial_wait_time_s
+                curr_timestamp_s = time.time()
+                time_diff = curr_timestamp_s - prev_timestamp_s
 
-                if serial_conn != None and serial_conn.isOpen():
-                    global prev_timestamp_s
-                    global serial_wait_time_s
-                    curr_timestamp_s = time.time()
-                    time_diff = curr_timestamp_s - prev_timestamp_s
-                
-                    if time_diff >= serial_wait_time_s:
-                        print "HERE"
-                        serial_conn.write("|")
-                        for player in self.players:
-                            serial_conn.write(player.serial_alpha())
-                            serial_conn.write(player.serial_beta())
+                if time_diff >= serial_wait_time_s:
+                    serial_conn.write("|")
+                    for player in self.players:
+                        serial_conn.write(player.serial_alpha())
+                        serial_conn.write(player.serial_beta())
                         serial_conn.flush()
-                        prev_timestamp_s = curr_timestamp_s
+                    prev_timestamp_s = curr_timestamp_s
 
     def _check_headsets(self):
         players_ready = True
         for player in self.players:
-            if not player.headset_status.all_is_good():
+            if not player.headset_status.touching_forehead:
                 players_ready = False
                 break
        
@@ -94,8 +92,17 @@ class HeadsetStatus:
         self.touching_forehead = False
         self.status_changed = True
     
-    def all_is_good(self):
-        return (self.left_ear == "good" and self.left_front == "good" and self.right_front == "good" and self.right_ear == "good")
+    def is_good(self, num_accept_good):
+        num_good = 0
+        if self.left_ear == "good":
+            num_good += 1
+        if self.left_front == "good":
+            num_good += 1
+        if self.right_front == "good":
+            num_good += 1
+        if self.right_ear == "good":
+            num_good += 1
+        return num_good >= num_accept_good
 
     def update_with_horseshoe(self, args):
         le, lf, rf, re = args
@@ -140,7 +147,6 @@ def status_callback(path, args, types, src, data):
     global game
     player_idx = data-1
     game.players[player_idx].headset_status.update_with_horseshoe(args)
-    
 
 def touching_forehead_callback(path, args, types, src, data):
     global game
