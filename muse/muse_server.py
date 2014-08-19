@@ -2,10 +2,10 @@ import liblo
 import sys
 import serial
 import time
+import math
 
 serial_wait_time_s = 0.05 
 prev_timestamp_s   = 0
-
 
 class Game:
     def __init__(self):
@@ -18,30 +18,45 @@ class Game:
         # 2. Headsets are on properly and we're sending serial data to the arduino
     
         self._check_headsets()
-        if self.waiting_for_headsets:
-            status_changed = False
+        curr_timestamp_s = time.time()
+
+        status_changed = False
+        for player in self.players:
+            if player.headset_status.status_changed:
+                status_changed = True
+                break
+        if status_changed:
+            print "Waiting for headsets..."
             for player in self.players:
-                if player.headset_status.status_changed:
-                    status_changed = True
-                    break
-            if status_changed:
-                print "Waiting for headsets..."
-                for player in self.players:
-                    player.headset_status.status_print()
-                    player.headset_status.status_changed = False
-        else:
+                player.headset_status.status_print()
+                player.headset_status.status_changed = False
+
+        if not self.waiting_for_headsets:
             if serial_conn != None and serial_conn.isOpen():
+
                 global prev_timestamp_s
                 global serial_wait_time_s
-                curr_timestamp_s = time.time()
-                time_diff = curr_timestamp_s - prev_timestamp_s
 
+                time_diff = curr_timestamp_s - prev_timestamp_s
                 if time_diff >= serial_wait_time_s:
-                    serial_conn.write("|")
-                    for player in self.players:
-                        serial_conn.write(player.serial_alpha())
-                        serial_conn.write(player.serial_beta())
+
+                    try:
+                        out_str = "0"
+                        serial_conn.write(chr(0))
+                        for player in self.players:
+                            serial_conn.write(player.serial_alpha())
+                            serial_conn.write(player.serial_beta())
+                            out_str += " " + str(ord(player.serial_alpha()))
+                            out_str += " " + str(ord(player.serial_beta()))
                         serial_conn.flush()
+
+                        print "Sent serial packet: " + out_str
+                    except serial.SerialException as err:
+                        print "Serial exception caught while writing. Serial connection will be reinitialized..."
+                        print "Exception Details: ", err
+                    except serial.SerialTimeoutException:
+                        print "Serial write timed out. Serial connection will be reinitialized..."
+
                     prev_timestamp_s = curr_timestamp_s
 
     def _check_headsets(self):
@@ -53,7 +68,6 @@ class Game:
        
         self.waiting_for_headsets = not players_ready
 
-
 class Player:
     def __init__(self, playerNum):
         self.headset_status = HeadsetStatus(playerNum)
@@ -62,14 +76,22 @@ class Player:
 
     def set_alpha(self, args):
         self.alpha[0], self.alpha[1], self.alpha[2], self.alpha[3] = args
+        for i in range(0, 4):
+            if math.isnan(self.alpha[i]):
+                self.alpha[i] = 0
 
     def set_beta(self, args):
         self.beta[0], self.beta[1], self.beta[2], self.beta[3] = args
+        for i in range(0, 4):
+            if math.isnan(self.beta[i]):
+                self.beta[i] = 0
 
     def serial_alpha(self):
         result = chr(0)
         try:
-            result = chr(int((float(sum(self.alpha))/4.0)*255))
+            temp   = float(sum(self.alpha)) / 4.0  # Avg. alpha
+            temp   = min(1.0, (temp / 0.195))      # Scale the value
+            result = chr(int(temp * 256))
         except:
             pass
         return result
@@ -77,7 +99,9 @@ class Player:
     def serial_beta(self):
         result = chr(0)
         try:
-            result = chr(int(float(sum(self.beta))/4.0*255))
+            temp   = float(sum(self.beta)) / 4.0  # Avg. beta
+            temp   = min(1.0, (temp / 0.195))     # Scale the value
+            result = chr(int(temp * 256))
         except:
             pass
         return result
@@ -105,27 +129,13 @@ class HeadsetStatus:
         return num_good >= num_accept_good
 
     def update_with_horseshoe(self, args):
-        le, lf, rf, re = args
-        temp = self._status_num_to_readable(le)
-        if temp != self.left_ear:
-            self.status_changed = True
-            self.left_ear = temp
-        temp = self._status_num_to_readable(lf)
-        if temp != self.left_front:
-            self.status_changed = True
-            self.left_front = temp
-        temp = self._status_num_to_readable(rf)
-        if temp != self.right_front:
-            self.status_changed = True
-            self.right_front = temp
-        temp = self._status_num_to_readable(re)
-        if temp != self.left_front:
-            self.status_changed = True
-            self.right_ear = temp
+        self.left_ear, self.left_front, self.right_front, self.right_ear = args
 
     def update_with_touching_forehead(self, args):
+        if self.touching_forehead != bool(args):
+            self.status_changed = True
         self.touching_forehead = bool(args)
-
+        
     def _status_num_to_readable(self, num):
         if num == 1:
             return "good"
@@ -135,8 +145,10 @@ class HeadsetStatus:
             return "bad"
 
     def status_print(self):
-        print "Player " + str(self.player_num) + " Sensor Status (<left ear>, <left front>, <right front>, <right ear>):"
-        print self.left_ear + " " + self.left_front + " " + self.right_front + " " + self.right_ear
+        print "Player " + str(self.player_num) ,
+        # + " Sensor Status (<left ear>, <left front>, <right front>, <right ear>):"
+        #print self.left_ear + " " + self.left_front + " " + self.right_front + " " + self.right_ear
+        print "Touching Forehead? " + str(self.touching_forehead)
 
 
 # Globals
@@ -156,20 +168,22 @@ def touching_forehead_callback(path, args, types, src, data):
 def alpha_callback(path, args, types, src, data):
     global game
     player_idx = data-1
-    game.players[player_idx].set_alpha(args)
+    if game.players[player_idx].headset_status.touching_forehead:
+        game.players[player_idx].set_alpha(args)
 
 def beta_callback(path, args, types, src, data):
     global game
     player_idx = data-1
-    game.players[player_idx].set_beta(args)
-
+    if game.players[player_idx].headset_status.touching_forehead:
+        game.players[player_idx].set_beta(args)
 
 def connect_serial():
     serial_conn = None
     retryTime = 1.0
     while True:
         try:
-            serial_conn = serial.Serial(serial_port, baud_rate, timeout=10.0)
+            print "Opening serial connection..."
+            serial_conn = serial.Serial(serial_port, baud_rate, timeout=3.0)
             if serial_conn.isOpen():
                 break
             else:
@@ -188,6 +202,9 @@ def connect_serial():
 
         time.sleep(retryTime)
         retryTime = max(10.0, retryTime + 1.0)
+    
+    if serial_conn.isOpen():
+        print "Serial connection open!"
 
     return serial_conn
 
